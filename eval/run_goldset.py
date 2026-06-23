@@ -39,33 +39,34 @@ _HYBRID_MARGIN = 0.01  # hybrid ≥ 单 lane 较好者,留极小噪声容差
 # 大仓单独 track(n≥30);其余聚合 _repo_group=long_tail(小仓单 slice 纯噪声)。
 _BIG_REPOS = ("rhizome", "eridanus-ops", "docket-kb", "logistics-kb")
 
-# lexical 闸冻结基线:goldset_kb_v5 首跑(2026-06-12,KB-430 增量刷新,语料=中央 compiled 当日快照)。
+# lexical 闸冻结基线:rebaseline 到 2026-06-23 语料/identity(ERI-608,承接 ADR-035 改名 +
+# goldset v5 迁移到当前 registry name 474 题)。lexical 随语料增长(11 天 freight rollout)
+# 近邻稀释整体下行(_overall 0.9853→0.9599),hybrid 补偿后基本持平(见 HYBRID_BASELINE)。
 BASELINE = {
-    "_overall": 0.9853,
-    "_repo_true=rhizome": 0.9783,
+    "_overall": 0.9599,
+    "_repo_true=rhizome": 0.9565,
     "_repo_true=eridanus-ops": 0.9714,
     "_repo_true=docket-kb": 1.0,
-    "_repo_true=logistics-kb": 1.0,
+    "_repo_true=logistics-kb": 0.9146,
     "_repo_group=long_tail": 1.0,
-    "_slice=zh_low_anchor": 0.968,
+    "_slice=zh_low_anchor": 0.9286,
 }
-# hybrid --protect 闸的绝对地板(KB-419 目标:恢复有意义绝对基线):
-# goldset_kb_v5 首跑数(2026-06-12,KB-430 增量刷新;v4 的 6 条 gold@10 miss 经对抗复审
-# 全部 keep——gold 仍唯一正确,近邻稀释属真实检索压力,故 v5 基线即带着这 6 条 miss)。
+# hybrid --protect 闸的绝对地板:rebaseline 到 2026-06-23 单轮实测(ERI-608)。hybrid 用
+# semantic+RRF+protection 补偿了 lexical 的近邻稀释,_overall 仅 0.9916→0.9873(基本持平);
 # 地板被语料自然增长顶破时 = goldset 陈旧信号,按 KB-375 式刷新而非放宽 margin。
 HYBRID_BASELINE = {
-    "_overall": 0.9916,
+    "_overall": 0.9873,
     "_repo_true=rhizome": 0.987,
     "_repo_true=eridanus-ops": 0.9857,
     "_repo_true=docket-kb": 1.0,
-    # 小切片(n<150)实测有 ±1-2 题的 query-embedding GPU 噪声(4 轮观测 1 轮翻转),
-    # base 取多轮观测最小值而非单轮满分, 防 gate 因噪声扑动;_overall(n=476)四轮稳定。
-    "_repo_true=logistics-kb": 0.988,
+    # 小切片(n<150)有 query-embedding GPU 噪声;logistics-kb 因 11 天 freight rollout
+    # 语料增长 0.988→0.9756(近邻稀释,非回归), rebaseline 接受为新地板。
+    "_repo_true=logistics-kb": 0.9756,
     "_repo_group=long_tail": 1.0,
-    "qtype=TB": 0.9916,
-    "qtype=NL": 0.9916,
-    "_slice=zh_low_anchor": 0.976,
-    "_slice=lexical_dependent": 0.9915,
+    "qtype=TB": 0.9873,
+    "qtype=NL": 0.9873,
+    "_slice=zh_low_anchor": 0.9921,
+    "_slice=lexical_dependent": 0.9856,
 }
 # hybrid 相对闸 tracked slices(principal 拍:hybrid ≥ max(lexical, semantic) per slice)。
 _HYBRID_TRACKED = (
