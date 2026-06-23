@@ -33,6 +33,13 @@ _DEFAULT_GOLD = Path(
         str(Path.home() / "workspace/data/personal/kb-eval/data/goldset_kb_v5.jsonl"),
     )
 )
+# eval 跑分输出: 可重建 runtime, 出 hot tree → XDG state(OPS-546); env 可配
+_DEFAULT_RESULTS = Path(
+    os.environ.get(
+        "KB_EVAL_RESULTS",
+        str(Path.home() / ".local/state/memex/eval-results"),
+    )
+)
 _MARGIN = 0.01  # 同算法同语料,应近精确复现;留极小容差
 _HYBRID_MARGIN = 0.01  # hybrid ≥ 单 lane 较好者,留极小噪声容差
 
@@ -161,7 +168,7 @@ def main() -> int:
         suffix += "_kindprior" if args.kind_prior else ""
     out_path = (
         args.out
-        or Path(__file__).parent / "results" / f"{args.lane}{suffix}_goldset.json"
+        or _DEFAULT_RESULTS / f"{args.lane}{suffix}_goldset.json"
     )
 
     gold = [
