@@ -166,10 +166,7 @@ def main() -> int:
     if args.lane == "hybrid":
         suffix += "_protected" if args.protect else ""
         suffix += "_kindprior" if args.kind_prior else ""
-    out_path = (
-        args.out
-        or _DEFAULT_RESULTS / f"{args.lane}{suffix}_goldset.json"
-    )
+    out_path = args.out or _DEFAULT_RESULTS / f"{args.lane}{suffix}_goldset.json"
 
     gold = [
         json.loads(ln)
