@@ -49,6 +49,8 @@ class RecallHit:
     legacy: bool = False
     raw: bool = False
     unverified: bool = False
+    # frontmatter 明确声明的生命周期/分类状态；空值表示旧文档未声明。
+    status: str = ""
 
 
 @dataclass(frozen=True)
@@ -205,6 +207,7 @@ def recall(  # noqa: C901, PLR0912, PLR0913, PLR0915 — lane 分派(lexical/sem
                 legacy=is_legacy,
                 raw=is_legacy,
                 unverified=is_legacy,
+                status=getattr(d, "status", "") if d else "",
                 abs_path=abs_path,
                 preview=preview,
             )

@@ -5,7 +5,7 @@ links/code)直接取;旧 v3 尽量挖等价字段(description/keywords/kind), �
 kind 超出 enum → 降级为 note 并记入报告。
 
 C4: compiled doc = identity/repo/domain/domain_prefixes/title/description/keywords/
-kind/body_text/source_path/source_hash/compiled_hash/commit_time。落 JSON 到中央
+kind/status/body_text/source_path/source_hash/compiled_hash/commit_time。落 JSON 到中央
 数据目录(源仓零污染)。
 """
 
@@ -56,6 +56,8 @@ class CompiledDoc:
     compiled_hash: str
     commit_time: str | None
     schema: str = SCHEMA
+    # 只投影 frontmatter 明确声明的状态；空值不推断为 canonical。
+    status: str = ""
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,7 @@ def compile_note(note: ScannedNote, repo_root: Path) -> CompileResult:
     # tag 索引 case-fold:消除 acronym 大小写漂移('PM'/'pm' 不再分叉)。
     # 只 casefold keywords,不动共享 _str_list(links/code 等路径字段不能 casefold)。
     keywords = [k.casefold() for k in _str_list(fm.get("keywords"))]
+    status = _str(fm.get("status"))
     # 缺 kind 默认 note 会静默稀释 kind prior → 记录缺失供读路径 loud。
     # 越界但给了也算 explicit: 越界已有 kind_downgrades 单独 loud。
     kind_explicit = bool(_str(fm.get("kind")))
@@ -192,6 +195,7 @@ def compile_note(note: ScannedNote, repo_root: Path) -> CompileResult:
         "keywords": keywords,
         "kind": kind,
         "kind_explicit": kind_explicit,
+        "status": status,
         "body_text": body_text,
         "source_path": note.source_path,
         "source_hash": source_hash,
@@ -215,6 +219,7 @@ def compile_note(note: ScannedNote, repo_root: Path) -> CompileResult:
         source_hash=source_hash,
         compiled_hash=compiled_hash,
         commit_time=commit_time,
+        status=status,
     )
     return CompileResult(
         note=note,
@@ -269,6 +274,7 @@ def compile_legacy_note(note: ScannedNote, repo_root: Path) -> CompileResult:
         "keywords": keywords,
         "kind": DEFAULT_KIND,
         "kind_explicit": True,
+        "status": _str(fm.get("status")) if fm is not None else "",
         "body_text": marked_body,
         "source_path": note.source_path,
         "source_hash": source_hash,
@@ -292,6 +298,7 @@ def compile_legacy_note(note: ScannedNote, repo_root: Path) -> CompileResult:
         source_hash=source_hash,
         compiled_hash=compiled_hash,
         commit_time=commit_time,
+        status=_str(fm.get("status")) if fm is not None else "",
     )
     return CompileResult(
         note=note,

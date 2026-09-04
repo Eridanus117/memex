@@ -13,6 +13,7 @@ prune 守卫拒绝(需人工确认后 --force);3 = 无 1/2 但有内容完整性
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import typer
@@ -116,6 +117,103 @@ def _echo_integrity(integ: IntegrityReport) -> None:
 def _echo_sync_progress(message: str) -> None:
     """sync_repo 长阶段进度:必须在最终 report 前可见,避免 apply 看起来假死。"""
     typer.echo(f"  {message}")
+
+
+@app.command(name="capture")
+def capture_cmd(
+    title: str = typer.Option(..., "--title", help="raw note 标题"),
+    text: str = typer.Option(
+        None,
+        "--text",
+        help="正文;省略时从 stdin 读取",
+    ),
+    source: str = typer.Option("manual", "--source", help="捕获来源标签"),
+    repo: str = typer.Option(
+        ...,
+        "--repo",
+        help="目标源仓, name=path(例如 logistics-kb=/path/to/kb)",
+    ),
+    apply: bool = typer.Option(False, "--apply", help="写入 raw note 与 000-raw/INDEX.md"),
+) -> None:
+    """低摩擦捕获一篇 raw note;默认 dry-run。"""
+    from memex.indexing.lifecycle import LifecycleError, apply_capture, plan_capture
+
+    repos, _legacy, _warn = _resolve_repos([repo])
+    name, repo_root = next(iter(repos.items()))
+    repo_root = repo_root.expanduser().resolve()
+    body = text if text is not None else sys.stdin.read()
+    try:
+        plan = plan_capture(repo_root, title=title, body=body, source=source)
+        if apply:
+            apply_capture(plan)
+    except LifecycleError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    verb = "captured" if apply else "would capture"
+    typer.echo(f"[{verb}] {name}:{plan.path.relative_to(repo_root)}")
+    if plan.index_created:
+        index_verb = "created" if apply else "would create"
+        typer.echo(f"  [{index_verb}] {plan.index_path.relative_to(repo_root)}")
+
+
+@app.command(name="promote")
+def promote_cmd(
+    path: str = typer.Option(..., "--path", help="源仓相对路径,例如 000-raw/2026/08/25/a.md"),
+    target: str = typer.Option(
+        ...,
+        "--to",
+        help="目标状态: raw | derived | canonical",
+    ),
+    repo: str = typer.Option(
+        ...,
+        "--repo",
+        help="目标源仓, name=path(例如 logistics-kb=/path/to/kb)",
+    ),
+    last_verified: str = typer.Option(
+        None,
+        "--last-verified",
+        help="canonical 必填, YYYY-MM-DD",
+    ),
+    evidence: list[str] = typer.Option(
+        None,
+        "--evidence",
+        help="canonical 必填,可重复指定",
+    ),
+    apply: bool = typer.Option(False, "--apply", help="写回源 Markdown"),
+) -> None:
+    """按相邻状态晋级 note;canonical 需要核验日期和 evidence。"""
+    from memex.indexing.lifecycle import (
+        LifecycleError,
+        apply_promotion,
+        plan_promotion,
+    )
+
+    repos, _legacy, _warn = _resolve_repos([repo])
+    _name, repo_root = next(iter(repos.items()))
+    repo_root = repo_root.expanduser().resolve()
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        note_path = candidate.resolve()
+    else:
+        note_path = (repo_root / candidate).resolve()
+    try:
+        note_path.relative_to(repo_root.resolve())
+        plan = plan_promotion(
+            note_path,
+            target_status=target,
+            last_verified=last_verified,
+            evidence=evidence,
+        )
+        if apply:
+            apply_promotion(plan)
+    except (LifecycleError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    verb = "promoted" if apply else "would promote"
+    typer.echo(
+        f"[{verb}] {plan.path.relative_to(repo_root)}: "
+        f"{plan.source_status} -> {plan.target_status}"
+    )
 
 
 @app.command(name="compile")

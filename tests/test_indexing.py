@@ -517,6 +517,24 @@ def test_kind_missing_recorded(tmp_path: Path) -> None:
     assert "kind missing" in out.report.render()
 
 
+def test_kind_missing_not_loud_for_lifecycle_statuses(tmp_path: Path) -> None:
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(
+        tmp_path / "d" / "raw.md",
+        "---\nstatus: raw\n---\n# raw\nbody\n",
+    )
+    _note(
+        tmp_path / "d" / "derived.md",
+        "---\nstatus: derived\n---\n# derived\nbody\n",
+    )
+    _note(
+        tmp_path / "d" / "canonical.md",
+        "---\nstatus: canonical\n---\n# canonical\nbody\n",
+    )
+    out = compile_repo("repo", tmp_path)
+    assert out.report.kind_missing == []
+
+
 def test_kind_present_is_explicit(tmp_path: Path) -> None:
     _index(tmp_path / "d" / "INDEX.md")
     _note(tmp_path / "d" / "a.md")  # FM 模板带 kind: reference
@@ -547,3 +565,24 @@ def test_kind_explicit_in_compiled_json(tmp_path: Path) -> None:
     out = compile_repo("repo", tmp_path)
     doc = next(d for d in out.docs if d.source_path == "d/a.md")
     assert json.loads(doc_to_json(doc))["kind_explicit"] is True
+
+
+def test_status_is_optional_and_projected(tmp_path: Path) -> None:
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(
+        tmp_path / "d" / "unclassified.md",
+        '---\ndescription: "待分类材料"\nkeywords: [unclassified]\n'
+        'kind: note\nstatus: unclassified\n---\n\n# T\n\n正文。\n',
+    )
+    out = compile_repo("repo", tmp_path)
+    doc = next(d for d in out.docs if d.source_path == "d/unclassified.md")
+    assert doc.status == "unclassified"
+    assert json.loads(doc_to_json(doc))["status"] == "unclassified"
+
+
+def test_status_absent_is_not_inferred(tmp_path: Path) -> None:
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(tmp_path / "d" / "old.md")
+    out = compile_repo("repo", tmp_path)
+    doc = next(d for d in out.docs if d.source_path == "d/old.md")
+    assert doc.status == ""

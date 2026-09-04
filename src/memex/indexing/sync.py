@@ -54,6 +54,7 @@ ProgressFn = Callable[[str], None]
 PAYLOAD_INDEX_FIELDS: tuple[str, ...] = (
     "domain_prefixes",
     "kind",
+    "status",
     "point_kind",
     "text_hash",
     "embedding_profile",
@@ -81,6 +82,7 @@ PAYLOAD_KEYS: tuple[str, ...] = (
     "domain_prefixes",
     "kind",
     "kind_explicit",
+    "status",
     "keywords",
     "source_path",
     "source_hash",
@@ -129,6 +131,9 @@ def build_payload(doc: CompiledDoc, text_hash: str) -> dict[str, Any]:
     }
     if doc.commit_time is not None:
         payload["commit_time"] = doc.commit_time
+    # 缺 status 不写入 payload, 保持旧文档“未声明”而非伪造 canonical。
+    if doc.status:
+        payload["status"] = doc.status
     return payload
 
 

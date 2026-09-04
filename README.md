@@ -100,6 +100,23 @@ memex-sync sync --apply
 
 写路径默认 dry-run,只有显式传 `--apply` 才会写向量库或落盘 compiled 产物。
 
+低摩擦 raw 捕获和生命周期晋级:
+
+```sh
+memex-sync capture --repo logistics-kb=/path/to/logistics-kb \
+  --title "先收下的想法" --text "原始材料" --apply
+memex-sync promote --repo logistics-kb=/path/to/logistics-kb \
+  --path 000-raw/2026/08/25/123000-先收下的想法.md --to derived --apply
+memex-sync promote --repo logistics-kb=/path/to/logistics-kb \
+  --path 000-raw/2026/08/25/123000-先收下的想法.md --to canonical \
+  --last-verified 2026-08-25 --evidence "人工核验: 资料来源" --apply
+```
+
+`capture` 默认 dry-run,按 `000-raw/YYYY/MM/DD/` 落盘并只写 `status: raw`;
+不要求 `kind`。`promote` 只能相邻晋级: `unclassified → raw → derived →
+canonical`;晋级 canonical 必须显式提供核验日期和至少一条 evidence。`kind` 在
+显式 lifecycle 文档中只是可选检索标签,不是捕获或晋级门禁。
+
 ## 文档
 
 架构和模块地图见 [`docs/architecture.md`](docs/architecture.md)。

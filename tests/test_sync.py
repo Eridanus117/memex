@@ -226,6 +226,29 @@ def test_apply_fresh_creates_collection_and_embeds(
     assert pt["payload"]["unit_mode"] == UNIT_MODE_WHOLE
 
 
+def test_status_payload_is_written_only_when_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("memex.indexing.sync.embed_texts", _fake_embed)
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(
+        tmp_path / "d" / "unclassified.md",
+        '---\ndescription: "待分类"\nkeywords: [unclassified]\n'
+        'kind: note\nstatus: unclassified\n---\n\n# T\n\n正文。\n',
+    )
+    fake = FakeQdrant()
+    _, rep = sync_repo(
+        "repo", tmp_path, client=fake, s=_settings(), mode=SyncMode(apply=True)
+    )
+    assert not rep.failures
+    point = next(
+        p
+        for p in fake.collections["testcoll"]["points"].values()
+        if p["payload"].get("status") == "unclassified"
+    )
+    assert point["payload"]["status"] == "unclassified"
+
+
 def test_apply_existing_collection_ensures_payload_indexes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

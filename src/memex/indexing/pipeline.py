@@ -89,7 +89,9 @@ def compile_repo(name: str, repo_root: Path, *, legacy: bool = False) -> Compile
                     from_kind=result.kind_downgraded_from,
                 )
             )
-        if not result.doc.kind_explicit:
+        # 一旦文档显式进入 lifecycle,kind 只是可选检索标签,不再是写入门禁。
+        # 仅对完全没有 status 的迁移文档保留旧的缺 kind 信号。
+        if not result.doc.kind_explicit and not result.doc.status:
             report.kind_missing.append(note.source_path)
         docs.append(result.doc)
         domains_with_notes.add(note.node.domain)
