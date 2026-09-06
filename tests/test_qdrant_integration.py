@@ -67,7 +67,7 @@ def _rand_vec() -> list[float]:
     return [random.random() for _ in range(DIM)]
 
 
-def _fake_embed(texts: list[str], s: Any = None) -> list[list[float]]:
+def _fake_embed(texts: list[str], s: Any = None, **_kwargs: Any) -> list[list[float]]:
     return [_rand_vec() for _ in texts]
 
 
@@ -140,7 +140,7 @@ def test_full_sync_apply_rerun_prune(
     assert len(rep.embedded) == 3
 
     # 重跑 → 全 unchanged(零 embed: boom 守门)
-    def _boom(texts: list[str], _s: Any = None) -> list[list[float]]:
+    def _boom(texts: list[str], _s: Any = None, **_kwargs: Any) -> list[list[float]]:
         raise AssertionError("不应 re-embed")
 
     monkeypatch.setattr("memex.indexing.sync.embed_texts", _boom)
@@ -183,7 +183,9 @@ def test_write_read_roundtrip_central_flag(
     s_write, client = scratch
     vectors: dict[str, list[float]] = {}
 
-    def _capture_embed(texts: list[str], s: Any = None) -> list[list[float]]:
+    def _capture_embed(
+        texts: list[str], s: Any = None, **_kwargs: Any
+    ) -> list[list[float]]:
         return [vectors.setdefault(t, _rand_vec()) for t in texts]
 
     monkeypatch.setattr("memex.indexing.sync.embed_texts", _capture_embed)
@@ -247,7 +249,9 @@ def test_recall_full_path_central_flag(
     s_write, client = scratch
     vectors: dict[str, list[float]] = {}
 
-    def _capture_embed(texts: list[str], s: Any = None) -> list[list[float]]:
+    def _capture_embed(
+        texts: list[str], s: Any = None, **_kwargs: Any
+    ) -> list[list[float]]:
         return [vectors.setdefault(t, _rand_vec()) for t in texts]
 
     monkeypatch.setattr("memex.indexing.sync.embed_texts", _capture_embed)

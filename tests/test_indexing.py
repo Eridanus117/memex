@@ -233,7 +233,7 @@ def test_legacy_raw_compile_without_index_or_frontmatter(tmp_path: Path) -> None
     raw = next(d for d in out.docs if d.source_path == "notes/plain.md")
     assert (
         raw.identity == "legacy-repo:legacy:notes/plain"
-    )  # ADR-035: registry name, 不取磁盘 basename
+    )  # registry name, 不取磁盘 basename
     assert raw.domain == "legacy"
     assert raw.domain_prefixes == ["legacy"]
     assert raw.kind == "note"
@@ -248,7 +248,7 @@ def test_legacy_raw_compile_without_index_or_frontmatter(tmp_path: Path) -> None
 
 
 def test_repo_identity_uses_registry_name_not_basename(tmp_path: Path) -> None:
-    """ADR-035 caveat-A 回归防线: 物理目录名(leaf) != registry name 时,
+    """caveat-A 回归防线: 物理目录名(leaf) != registry name 时,
 
     identity / repo / canonical_repo / 落盘子目录全部用 registry name, 不取磁盘
     basename。生产名常 name==leaf, 物理数据测不出"读 leaf"的回归 → 必须用
@@ -384,6 +384,12 @@ def test_safe_filename() -> None:
     assert fn.endswith(".json")
     assert ":" not in fn
     assert "/" not in fn
+    identities = (
+        "knowledge:notes:两套生命周期模型",
+        "knowledge:notes:工作方法地图",
+        "knowledge:notes:主人档案",
+    )
+    assert len({safe_filename(identity) for identity in identities}) == len(identities)
 
 
 # ---- embed_text (C4) --------------------------------------------------------
@@ -517,6 +523,24 @@ def test_kind_missing_recorded(tmp_path: Path) -> None:
     assert "kind missing" in out.report.render()
 
 
+def test_kind_missing_not_loud_for_lifecycle_statuses(tmp_path: Path) -> None:
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(
+        tmp_path / "d" / "raw.md",
+        "---\nstatus: raw\n---\n# raw\nbody\n",
+    )
+    _note(
+        tmp_path / "d" / "derived.md",
+        "---\nstatus: derived\n---\n# derived\nbody\n",
+    )
+    _note(
+        tmp_path / "d" / "canonical.md",
+        "---\nstatus: canonical\n---\n# canonical\nbody\n",
+    )
+    out = compile_repo("repo", tmp_path)
+    assert out.report.kind_missing == []
+
+
 def test_kind_present_is_explicit(tmp_path: Path) -> None:
     _index(tmp_path / "d" / "INDEX.md")
     _note(tmp_path / "d" / "a.md")  # FM 模板带 kind: reference
@@ -547,3 +571,24 @@ def test_kind_explicit_in_compiled_json(tmp_path: Path) -> None:
     out = compile_repo("repo", tmp_path)
     doc = next(d for d in out.docs if d.source_path == "d/a.md")
     assert json.loads(doc_to_json(doc))["kind_explicit"] is True
+
+
+def test_status_is_optional_and_projected(tmp_path: Path) -> None:
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(
+        tmp_path / "d" / "unclassified.md",
+        '---\ndescription: "待分类材料"\nkeywords: [unclassified]\n'
+        'kind: note\nstatus: unclassified\n---\n\n# T\n\n正文。\n',
+    )
+    out = compile_repo("repo", tmp_path)
+    doc = next(d for d in out.docs if d.source_path == "d/unclassified.md")
+    assert doc.status == "unclassified"
+    assert json.loads(doc_to_json(doc))["status"] == "unclassified"
+
+
+def test_status_absent_is_not_inferred(tmp_path: Path) -> None:
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(tmp_path / "d" / "old.md")
+    out = compile_repo("repo", tmp_path)
+    doc = next(d for d in out.docs if d.source_path == "d/old.md")
+    assert doc.status == ""

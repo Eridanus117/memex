@@ -77,7 +77,7 @@ class Qdrant:
         url = f"{self.base}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers: dict[str, str] = {"Content-Type": "application/json"}
-        token = os.environ.get("ORRERY_GATEWAY_TOKEN")
+        token = os.environ.get("KB_SEARCH_BEARER_TOKEN")
         if token:
             headers["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -119,11 +119,17 @@ class Qdrant:
     def create_payload_index(
         self, name: str, field: str, schema: str = "keyword"
     ) -> None:
-        self._request(
-            "PUT",
-            f"/collections/{name}/index",
-            {"field_name": field, "field_schema": schema},
-        )
+        try:
+            self._request(
+                "PUT",
+                f"/collections/{name}/index",
+                {"field_name": field, "field_schema": schema},
+            )
+        except QdrantError as exc:
+            msg = str(exc).lower()
+            if exc.code in {400, 409} and "already" in msg and "exist" in msg:
+                return
+            raise
 
     def delete_collection(self, name: str) -> None:
         self._request("DELETE", f"/collections/{name}")

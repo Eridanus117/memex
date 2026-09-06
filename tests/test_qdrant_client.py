@@ -6,7 +6,7 @@ from typing import Any
 
 from memex.config import Settings
 from memex.indexing import qdrant
-from memex.indexing.qdrant import Qdrant
+from memex.indexing.qdrant import Qdrant, QdrantError
 
 
 class _Resp:
@@ -35,7 +35,7 @@ def test_qdrant_request_uses_gateway_token_and_ssl_context(
         captured["context"] = context
         return _Resp()
 
-    monkeypatch.setenv("ORRERY_GATEWAY_TOKEN", "test-token")
+    monkeypatch.setenv("KB_SEARCH_BEARER_TOKEN", "test-token")
     monkeypatch.setattr(
         "memex.indexing.qdrant._internal_ssl_context",
         lambda _url: sentinel_context,
@@ -107,3 +107,28 @@ def test_internal_ssl_context_skips_plain_http(monkeypatch: Any, tmp_path: Any) 
     monkeypatch.setenv("KB_SEARCH_CA_BUNDLE", str(ca))
 
     assert qdrant._internal_ssl_context("http://127.0.0.1:6333") is None
+
+
+def test_create_payload_index_treats_already_exists_as_idempotent(
+    monkeypatch: Any,
+) -> None:
+    client = Qdrant(Settings(qdrant_url="https://example.test/qdrant"))
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str, path: str, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        calls.append((method, path, body))
+        raise QdrantError("PUT /collections/c/index → 409: already exists", code=409)
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.create_payload_index("c", "text_hash")
+
+    assert calls == [
+        (
+            "PUT",
+            "/collections/c/index",
+            {"field_name": "text_hash", "field_schema": "keyword"},
+        )
+    ]

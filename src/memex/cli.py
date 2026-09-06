@@ -77,6 +77,10 @@ def recall(
         None, help="按 kind 收窄 (spec|reference|decision|research|runbook|note|index)"
     ),
     tag: str = typer.Option(None, help="按 frontmatter keyword 收窄 (精确 match)"),
+    status: str = typer.Option(
+        None,
+        help="按显式 status 收窄 (unclassified|raw|derived|canonical)",
+    ),
     lane: str = typer.Option(
         "hybrid",
         help="hybrid(默认=最佳) | lexical | semantic;远端 embedding 不可用时降 lexical",
@@ -88,7 +92,7 @@ def recall(
 ) -> None:
     """唯一最佳召回入口:hybrid + lexical-dependent protection(评测集上 gold@10 ≈ 0.997)+ title/path 富化。
 
-    联邦 = 一次中央 search(无 fan-out/--root);--domain/--kind/--tag 是
+    联邦 = 一次中央 search(无 fan-out/--root);--domain/--kind/--tag/--status 是
     server-side facet 收窄。与低层 query 的区别 = recall 锁定生产最佳配置, 不必懂
     lane 调参。tier 排序 / --include-inferred 过滤 deferred(待写路径流入 lifecycle/
     authored_from)。
@@ -98,7 +102,7 @@ def recall(
     from memex.recall import recall as do_recall
     from memex.semantic import SemanticUnavailable
 
-    facets = Facets(domain=domain, kind=kind, tag=tag)
+    facets = Facets(domain=domain, kind=kind, tag=tag, status=status)
     try:
         res = do_recall(
             text,
@@ -129,6 +133,7 @@ def recall(
                     "legacy": h.legacy,
                     "raw": h.raw,
                     "unverified": h.unverified,
+                    "status": h.status,
                     "preview": h.preview,
                 }
                 for h in hits
@@ -144,7 +149,12 @@ def recall(
         typer.echo("(no hits)")
     else:
         for i, h in enumerate(hits, 1):
-            mark = "  ⚠ legacy/raw 未核验" if h.unverified else ""
+            marks: list[str] = []
+            if h.unverified:
+                marks.append("⚠ legacy/raw 未核验")
+            if h.status:
+                marks.append(f"status={h.status}")
+            mark = f"  [{' | '.join(marks)}]" if marks else ""
             typer.echo(
                 f"{i:2}. [{h.repo}] {h.title or h.object_key}  ({h.score:.4f}){mark}"
             )
@@ -184,6 +194,7 @@ def _export_hit_payload(
         "legacy": h.legacy,
         "raw": h.raw,
         "unverified": h.unverified,
+        "status": getattr(d, "status", "") if d else "",
         "kind": getattr(d, "kind", "") if d else "",
         "domain_prefixes": list(getattr(d, "domain_prefixes", ())) if d else [],
         "keywords": list(getattr(d, "keywords", ())) if d else [],
@@ -206,6 +217,10 @@ def recall_export(
         None, help="按 kind 收窄 (spec|reference|decision|research|runbook|note|index)"
     ),
     tag: str = typer.Option(None, help="按 frontmatter keyword 收窄 (精确 match)"),
+    status: str = typer.Option(
+        None,
+        help="按显式 status 收窄 (unclassified|raw|derived|canonical)",
+    ),
     lane: str = typer.Option(
         "hybrid",
         help="hybrid(默认=最佳) | lexical | semantic;远端 embedding 不可用时降 lexical",
@@ -223,7 +238,7 @@ def recall_export(
     from memex.recall import recall as do_recall
     from memex.semantic import SemanticUnavailable
 
-    facets = Facets(domain=domain, kind=kind, tag=tag)
+    facets = Facets(domain=domain, kind=kind, tag=tag, status=status)
     try:
         res = do_recall(
             text, limit=limit, repo=repo, lane=lane, facets=facets if facets else None
@@ -242,6 +257,7 @@ def recall_export(
             "domain": facets.domain,
             "kind": facets.kind,
             "tag": facets.tag,
+            "status": facets.status,
         },
         "hits": [
             _export_hit_payload(h, docs, max_text_chars=max_text_chars)

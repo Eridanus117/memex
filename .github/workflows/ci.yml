@@ -1,10 +1,21 @@
 name: CI
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
-    uses: the-orrery/.github/.github/workflows/python-ci.yml@v7
+    uses: the-orrery/.github/.github/workflows/python-ci.yml@58e94252df4b455f1b6890ca5a8b400b3688ba81 # v9
     with:
-      private-deps: true
-      ruff-extend-ignore: "['E501','TRY003','RUF001','RUF002']"
-      ruff-extend-per-file-ignores: "{'tests/**'=['S101','PLR2004','ARG'],'**/cli.py'=['PLR0913'],'eval/run_goldset.py'=['C901','PLR0912','PLR0915']}"
-    secrets: inherit
+      python-version: "3.12"
+      ruff-extend-ignore: "['TRY003','RUF001','RUF002']"
+      ruff-extend-per-file-ignores: "{'tests/**'=['ARG']}"

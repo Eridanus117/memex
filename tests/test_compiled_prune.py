@@ -126,7 +126,7 @@ def test_no_compiled_dir_noop(tmp_path: Path) -> None:
     assert pr.stale == [] and not pr.deleted and pr.refused is None
 
 
-# ---- 整仓退役清理(ADR-035: 改名后旧 leaf 名整目录成孤儿)-----------------------
+# ---- 整仓退役清理(改名后旧 leaf 名整目录成孤儿)-----------------------
 
 
 def _seed_repo_dir(compiled: Path, name: str, n: int = 2) -> None:
@@ -139,13 +139,13 @@ def _seed_repo_dir(compiled: Path, name: str, n: int = 2) -> None:
 def test_retired_repo_dir_pruned(tmp_path: Path) -> None:
     # 不在 active sources 的整个 repo 子目录被整目录清(单篇 prune 覆盖不到此场景)。
     compiled = tmp_path / "compiled"
-    _seed_repo_dir(compiled, "logistics-kb", 3)  # active
-    _seed_repo_dir(compiled, "logistics", 2)  # 退役 leaf 名孤儿
-    rp = prune_retired_repos(compiled, {"logistics-kb"}, apply=True)
-    assert rp.retired == ["logistics"]
+    _seed_repo_dir(compiled, "project-kb", 3)  # active
+    _seed_repo_dir(compiled, "project-a", 2)  # 退役 leaf 名孤儿
+    rp = prune_retired_repos(compiled, {"project-kb"}, apply=True)
+    assert rp.retired == ["project-a"]
     assert rp.deleted is True
-    assert not (compiled / "logistics").exists()
-    assert (compiled / "logistics-kb").exists()
+    assert not (compiled / "project-a").exists()
+    assert (compiled / "project-kb").exists()
 
 
 def test_retired_dry_run_default_no_delete(tmp_path: Path) -> None:

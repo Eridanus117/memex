@@ -61,28 +61,77 @@ def test_load_source_repos_from_toml(
 ) -> None:
     toml = tmp_path / "kb-sources.toml"
     toml.write_text(
-        'workspace_root = "~/ws"\n'
+        'source_root = "~/projects"\n'
         '[[source]]\nname = "alpha"\n'
         '[[source]]\nname = "beta"\npath = "~/elsewhere/beta"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("KB_SOURCES", str(toml))
+    monkeypatch.delenv("KB_SOURCE_ROOT", raising=False)
     monkeypatch.delenv("KB_WORKSPACE_ROOT", raising=False)
     repos = load_source_repos()
-    assert repos["alpha"] == Path("~/ws").expanduser() / "alpha"
+    assert repos["alpha"] == Path("~/projects").expanduser() / "alpha"
     assert repos["beta"] == Path("~/elsewhere/beta").expanduser()
 
 
-def test_load_source_repos_workspace_root_env_override(
+def test_load_source_repos_source_root_env_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     toml = tmp_path / "kb-sources.toml"
     toml.write_text(
-        'workspace_root = "~/ws"\n[[source]]\nname = "alpha"\n', encoding="utf-8"
+        'source_root = "~/projects"\n[[source]]\nname = "alpha"\n',
+        encoding="utf-8",
     )
     monkeypatch.setenv("KB_SOURCES", str(toml))
-    monkeypatch.setenv("KB_WORKSPACE_ROOT", str(tmp_path / "override"))
+    monkeypatch.setenv("KB_SOURCE_ROOT", str(tmp_path / "override"))
     assert load_source_repos()["alpha"] == tmp_path / "override" / "alpha"
+
+
+def test_load_source_repos_shared_workspace_root_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toml = tmp_path / "sources.toml"
+    toml.write_text(
+        f'workspace_root = "{tmp_path / "from-registry"}"\n'
+        '[[source]]\nname = "alpha"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KB_SOURCES", str(toml))
+    monkeypatch.delenv("KB_SOURCE_ROOT", raising=False)
+    monkeypatch.delenv("KB_WORKSPACE_ROOT", raising=False)
+    assert load_source_repos()["alpha"] == tmp_path / "from-registry" / "alpha"
+
+    monkeypatch.setenv("KB_WORKSPACE_ROOT", str(tmp_path / "from-env"))
+    assert load_source_repos()["alpha"] == tmp_path / "from-env" / "alpha"
+
+
+def test_load_source_repos_applies_sibling_local_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toml = tmp_path / "sources.toml"
+    toml.write_text(
+        f'workspace_root = "{tmp_path}"\n'
+        '[[source]]\nname = "alpha"\nlegacy = true\n'
+        '[[source]]\nname = "beta"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "sources.local.toml").write_text(
+        f'[[source]]\nname = "alpha"\npath = "{tmp_path / "local-alpha"}"\nlegacy = false\n'
+        f'[[source]]\nname = "unknown"\npath = "{tmp_path / "ignored"}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KB_SOURCES", str(toml))
+    monkeypatch.delenv("KB_SOURCE_ROOT", raising=False)
+    monkeypatch.delenv("KB_WORKSPACE_ROOT", raising=False)
+
+    from memex.registry import load_source_registry
+
+    registry = load_source_registry()
+    assert registry.repos == {
+        "alpha": tmp_path / "local-alpha",
+        "beta": tmp_path / "beta",
+    }
+    assert registry.legacy == frozenset()
 
 
 def test_load_source_repos_fallback_on_missing(
@@ -92,19 +141,19 @@ def test_load_source_repos_fallback_on_missing(
     assert load_source_repos() == DEFAULT_SOURCE_REPOS
 
 
-def test_load_source_repos_rewrites_legacy_default_env(
+def test_load_source_repos_default_env_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    workspace = tmp_path / "workspace"
-    toml = workspace / "knowledge" / "personal" / "rhizome" / "kb-sources.toml"
+    source_root = tmp_path / "sources"
+    toml = source_root / "kb-sources.toml"
     toml.parent.mkdir(parents=True)
     toml.write_text(
-        f'workspace_root = "{workspace}"\n[[source]]\nname = "alpha"\n',
+        f'source_root = "{source_root}"\n[[source]]\nname = "alpha"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("KB_WORKSPACE_ROOT", str(workspace))
-    monkeypatch.setenv("KB_SOURCES", str(workspace / "rhizome" / "kb-sources.toml"))
-    assert load_source_repos()["alpha"] == workspace / "alpha"
+    monkeypatch.setenv("KB_SOURCE_ROOT", str(source_root))
+    monkeypatch.delenv("KB_SOURCES", raising=False)
+    assert load_source_repos()["alpha"] == source_root / "alpha"
 
 
 def test_load_source_repos_fallback_on_garbage(
@@ -136,7 +185,7 @@ def test_load_source_repos_skips_illegal_and_duplicate_names(
     # 含 / \ .. 或前导 ~ 的 name = 路径穿越风险, 跳过;重复 name 取首个。
     toml = tmp_path / "kb-sources.toml"
     toml.write_text(
-        'workspace_root = "~/ws"\n'
+        'source_root = "~/projects"\n'
         '[[source]]\nname = "good"\n'
         '[[source]]\nname = "../evil"\n'
         '[[source]]\nname = "a/b"\n'
@@ -146,11 +195,12 @@ def test_load_source_repos_skips_illegal_and_duplicate_names(
         encoding="utf-8",
     )
     monkeypatch.setenv("KB_SOURCES", str(toml))
+    monkeypatch.delenv("KB_SOURCE_ROOT", raising=False)
     monkeypatch.delenv("KB_WORKSPACE_ROOT", raising=False)
     repos = load_source_repos()
     assert set(repos) == {"good"}
     assert (
-        repos["good"] == Path("~/ws").expanduser() / "good"
+        repos["good"] == Path("~/projects").expanduser() / "good"
     )  # 首个 wins, sneaky 路径没生效
 
 
@@ -369,7 +419,7 @@ def test_sync_all_green_exits_zero(
         "memex.indexing.sync.sync_repo",
         lambda name, path, **kw: _fake_sync_result(name),
     )
-    # --out 隔离: 退役清理(ADR-035)扫 out_dir, 不碰生产 compiled_dir。
+    # --out 隔离: 退役清理扫 out_dir, 不碰生产 compiled_dir。
     result = CliRunner().invoke(sync_cli.app, ["sync-all", "--out", str(tmp_path)])
     assert result.exit_code == 0, result.stdout
     assert ">>> sync-all good  (/g)" in result.stdout
@@ -423,7 +473,7 @@ def test_sync_all_passes_legacy_flag(
         ),
     )
     monkeypatch.setattr("memex.indexing.sync.sync_repo", _fake_sync_repo)
-    # --out 隔离: 退役清理(ADR-035)扫 out_dir, 不碰生产 compiled_dir。
+    # --out 隔离: 退役清理扫 out_dir, 不碰生产 compiled_dir。
     result = CliRunner().invoke(sync_cli.app, ["sync-all", "--out", str(tmp_path)])
     assert result.exit_code == 0, result.stdout
     assert calls == [("good", False), ("old", True)]

@@ -15,6 +15,7 @@ from memex.indexing.qdrant import Qdrant, QdrantError
 from memex.indexing.sync import (
     EMBEDDING_PROFILE_ID,
     INDEX_PROFILE,
+    PAYLOAD_INDEX_FIELDS,
     POINT_KIND,
     UNIT_MODE_WHOLE,
     SyncMode,
@@ -59,11 +60,11 @@ def _settings(**overrides: Any) -> Settings:
     return Settings(**base)
 
 
-def _fake_embed(texts: list[str], s: Any = None) -> list[list[float]]:
+def _fake_embed(texts: list[str], s: Any = None, **_kwargs: Any) -> list[list[float]]:
     return [[float(len(t) % 7) + 0.5] * DIM for t in texts]
 
 
-def _boom_embed(texts: list[str], s: Any = None) -> list[list[float]]:
+def _boom_embed(texts: list[str], s: Any = None, **_kwargs: Any) -> list[list[float]]:
     raise AssertionError("embed 不应被调用")
 
 
@@ -115,7 +116,8 @@ class FakeQdrant(Qdrant):
         self, name: str, field: str, schema: str = "keyword"
     ) -> None:
         self.write_ops.append(f"create_index:{field}")
-        self.collections[name]["indexes"].append(field)
+        if field not in self.collections[name]["indexes"]:
+            self.collections[name]["indexes"].append(field)
 
     def delete_collection(self, name: str) -> None:
         self.write_ops.append(f"delete_collection:{name}")
@@ -218,10 +220,73 @@ def test_apply_fresh_creates_collection_and_embeds(
     assert not rep.failures
     assert len(rep.embedded) == 2
     coll = fake.collections["testcoll"]
-    assert sorted(coll["indexes"]) == ["domain_prefixes", "kind", "point_kind"]
+    assert sorted(coll["indexes"]) == sorted(PAYLOAD_INDEX_FIELDS)
     assert len(coll["points"]) == 2
     pt = next(iter(coll["points"].values()))
     assert pt["payload"]["unit_mode"] == UNIT_MODE_WHOLE
+
+
+def test_status_payload_is_written_only_when_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("memex.indexing.sync.embed_texts", _fake_embed)
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(
+        tmp_path / "d" / "unclassified.md",
+        '---\ndescription: "待分类"\nkeywords: [unclassified]\n'
+        'kind: note\nstatus: unclassified\n---\n\n# T\n\n正文。\n',
+    )
+    fake = FakeQdrant()
+    _, rep = sync_repo(
+        "repo", tmp_path, client=fake, s=_settings(), mode=SyncMode(apply=True)
+    )
+    assert not rep.failures
+    point = next(
+        p
+        for p in fake.collections["testcoll"]["points"].values()
+        if p["payload"].get("status") == "unclassified"
+    )
+    assert point["payload"]["status"] == "unclassified"
+
+
+def test_apply_existing_collection_ensures_payload_indexes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("memex.indexing.sync.embed_texts", _fake_embed)
+    _index(tmp_path / "d" / "INDEX.md")
+    fake = FakeQdrant()
+    fake.collections["testcoll"] = {"points": {}, "indexes": ["point_kind"], "dim": DIM}
+    _, rep = sync_repo(
+        "repo", tmp_path, client=fake, s=_settings(), mode=SyncMode(apply=True)
+    )
+    assert not rep.failures
+    assert sorted(fake.collections["testcoll"]["indexes"]) == sorted(
+        PAYLOAD_INDEX_FIELDS
+    )
+    assert "create_collection:testcoll" not in fake.write_ops
+
+
+def test_progress_reports_long_phases_and_embed_timeout_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("memex.indexing.sync.embed_texts", _fake_embed)
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(tmp_path / "d" / "a.md")
+    progress: list[str] = []
+    _, rep = sync_repo(
+        "repo",
+        tmp_path,
+        client=FakeQdrant(),
+        s=_settings(embed_timeout_secs=12),
+        mode=SyncMode(apply=True),
+        progress=progress.append,
+    )
+    assert not rep.failures
+    assert any("compile start" in line for line in progress)
+    assert any("planning doc actions" in line for line in progress)
+    assert any("embedding batch 1/1" in line for line in progress)
+    assert any("timeout=12s" in line for line in progress)
+    assert any("KB_SEARCH_EMBED_TIMEOUT_SECS" in line for line in progress)
 
 
 def test_rerun_unchanged_skips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,7 +395,7 @@ def test_rename_no_h1_note_rekeys_zero_embed(
     )
     assert len(rep.rekeyed) == 1
     assert not rep.embedded and not rep.failures
-    repo = "repo"  # ADR-035: identity = registry name, 不取磁盘 basename
+    repo = "repo"  # identity = registry name, 不取磁盘 basename
     assert rep.rekeyed == [f"{repo}:d:new-name"]
     assert rep.pruned == [f"{repo}:d:old-name"]
 
@@ -388,7 +453,7 @@ def test_mass_prune_guard_refuses(
     _index(tmp_path / "d" / "INDEX.md")
     _note(tmp_path / "d" / "a.md")
     fake = FakeQdrant()
-    _seed_ghosts(fake, "repo", 4)  # canonical repo = registry name(ADR-035)
+    _seed_ghosts(fake, "repo", 4)  # canonical repo = registry name
     _, rep = sync_repo(
         "repo", tmp_path, client=fake, s=_settings(), mode=SyncMode(apply=True)
     )
@@ -496,7 +561,7 @@ def test_single_doc_failure_continues(
     _index(tmp_path / "d" / "INDEX.md")
     _note(tmp_path / "d" / "a.md")
     _note(tmp_path / "d" / "b.md")
-    repo = "repo"  # ADR-035: identity = registry name, 不取磁盘 basename
+    repo = "repo"  # identity = registry name, 不取磁盘 basename
     fake = FailingUpsertQdrant(f"{repo}:d:a")
     # batch=1 → 单篇单 upsert;a 失败不拖垮 INDEX/b
     _, rep = sync_repo(
@@ -515,7 +580,9 @@ def test_single_doc_failure_continues(
 def test_embed_failure_recorded_continues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _fail_embed(texts: list[str], s: Any = None) -> list[list[float]]:
+    def _fail_embed(
+        texts: list[str], s: Any = None, **_kwargs: Any
+    ) -> list[list[float]]:
         raise OSError("embedding 服务挂了")
 
     monkeypatch.setattr("memex.indexing.sync.embed_texts", _fail_embed)
@@ -535,7 +602,9 @@ def test_embed_batch_failure_falls_back_to_single_docs(
 ) -> None:
     calls: list[int] = []
 
-    def _batch_fails(texts: list[str], s: Any = None) -> list[list[float]]:
+    def _batch_fails(
+        texts: list[str], s: Any = None, **_kwargs: Any
+    ) -> list[list[float]]:
         calls.append(len(texts))
         if len(texts) > 1:
             raise OSError("gateway timeout")
@@ -554,6 +623,36 @@ def test_embed_batch_failure_falls_back_to_single_docs(
     assert len(rep.embedded) == 3
     assert len(fake.collections["testcoll"]["points"]) == 3
     assert any("逐篇重试" in n for n in rep.notes)
+
+
+def test_sync_uses_sync_embedding_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _capture_embed(
+        texts: list[str], s: Any = None, **kwargs: Any
+    ) -> list[list[float]]:
+        calls.append(kwargs)
+        return _fake_embed(texts, s)
+
+    monkeypatch.setattr("memex.indexing.sync.embed_texts", _capture_embed)
+    _index(tmp_path / "d" / "INDEX.md")
+    _note(tmp_path / "d" / "a.md")
+    fake = FakeQdrant()
+    _, rep = sync_repo(
+        "repo",
+        tmp_path,
+        client=fake,
+        s=_settings(embedding_url="https://gateway.test/embedding-query/v1/embeddings"),
+        mode=SyncMode(apply=True),
+    )
+
+    assert not rep.failures
+    assert {call["lane"] for call in calls} == {"sync"}
+    assert {call["endpoint"] for call in calls} == {
+        "https://gateway.test/embedding-sync/v1/embeddings"
+    }
 
 
 class DownQdrant(FakeQdrant):
@@ -616,7 +715,7 @@ def test_kind_explicit_rollout_payload_update_not_embed(
     assert new_pt["vector"] == old_vec  # 零 re-embed
 
 
-# ---- prune_retired_qdrant_points (ADR-035 / ERI-607) -------------------------
+# ---- prune_retired_qdrant_points -------------------------
 
 
 def _seed_idy(fake: FakeQdrant, coll: str, specs: list[tuple[str, str]]) -> None:
@@ -631,17 +730,17 @@ def test_retire_qdrant_deletes_inactive_repo_points() -> None:
         fake,
         "testcoll",
         [
-            ("1", "logistics-kb:d:a"),
-            ("2", "logistics-kb:d:b"),
-            ("3", "logistics:d:a"),  # 退役: 旧 leaf
-            ("4", "docket:d:x"),  # 退役: 旧 leaf
+            ("1", "project-kb:d:a"),
+            ("2", "project-kb:d:b"),
+            ("3", "project-a:d:a"),  # 退役: 旧 leaf
+            ("4", "tracker:d:x"),  # 退役: 旧 leaf
             ("5", "rhizome:d:y"),
         ],
     )
     r = prune_retired_qdrant_points(
-        fake, "testcoll", {"logistics-kb", "rhizome", "docket-kb"}, apply=True
+        fake, "testcoll", {"project-kb", "rhizome", "tracker-kb"}, apply=True
     )
-    assert r.retired_repos == ["docket", "logistics"]
+    assert r.retired_repos == ["project-a", "tracker"]
     assert r.point_count == 2
     assert r.deleted
     assert set(fake.collections["testcoll"]["points"]) == {"1", "2", "5"}
@@ -649,8 +748,8 @@ def test_retire_qdrant_deletes_inactive_repo_points() -> None:
 
 def test_retire_qdrant_dry_run_no_delete() -> None:
     fake = FakeQdrant()
-    _seed_idy(fake, "testcoll", [("1", "logistics-kb:d:a"), ("2", "logistics:d:a")])
-    r = prune_retired_qdrant_points(fake, "testcoll", {"logistics-kb"}, apply=False)
+    _seed_idy(fake, "testcoll", [("1", "project-kb:d:a"), ("2", "project-a:d:a")])
+    r = prune_retired_qdrant_points(fake, "testcoll", {"project-kb"}, apply=False)
     assert r.point_count == 1
     assert not r.deleted
     assert set(fake.collections["testcoll"]["points"]) == {"1", "2"}
@@ -665,15 +764,15 @@ def test_retire_qdrant_mass_guard_refuses_then_force() -> None:
             ("1", "old:d:a"),
             ("2", "old:d:b"),
             ("3", "old:d:c"),
-            ("4", "logistics-kb:d:x"),
+            ("4", "project-kb:d:x"),
         ],
     )  # 3 退役 / 4 总 = 75% > 50%
-    r = prune_retired_qdrant_points(fake, "testcoll", {"logistics-kb"}, apply=True)
+    r = prune_retired_qdrant_points(fake, "testcoll", {"project-kb"}, apply=True)
     assert r.refused is not None
     assert not r.deleted
     assert set(fake.collections["testcoll"]["points"]) == {"1", "2", "3", "4"}
     r2 = prune_retired_qdrant_points(
-        fake, "testcoll", {"logistics-kb"}, apply=True, force=True
+        fake, "testcoll", {"project-kb"}, apply=True, force=True
     )
     assert r2.deleted
     assert r2.point_count == 3
@@ -682,7 +781,7 @@ def test_retire_qdrant_mass_guard_refuses_then_force() -> None:
 
 def test_retire_qdrant_missing_collection_noop() -> None:
     fake = FakeQdrant()
-    r = prune_retired_qdrant_points(fake, "nope", {"logistics-kb"}, apply=True)
+    r = prune_retired_qdrant_points(fake, "nope", {"project-kb"}, apply=True)
     assert r.point_count == 0
     assert not r.deleted
     assert not r.retired_repos

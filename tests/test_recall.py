@@ -183,7 +183,7 @@ def test_recall_export_handles_missing_doc(monkeypatch) -> None:
 
 
 def test_recall_abs_path_from_registry(monkeypatch) -> None:
-    # ADR-035 读路径: recall 输出磁盘绝对路径(registry repo 根 + source_path),
+    # 读路径: recall 输出磁盘绝对路径(registry repo 根 + source_path),
     # agent 召回后可直接 Read。
     from pathlib import Path
 

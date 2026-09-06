@@ -33,7 +33,7 @@ from memex.indexing.scan import (
 class CompileOutput:
     """一个 repo 的编译产出: 报告 + 成功编译的 docs(dry-run 时不落盘)。
 
-    canonical_repo = repo identity(identity 前缀 + 落盘子目录名)。ADR-035 起
+    canonical_repo = repo identity(identity 前缀 + 落盘子目录名)。起
     = registry 逻辑 name(kb-sources.toml), 与物理目录名/位置解耦。
     """
 
@@ -50,7 +50,7 @@ def compile_repo(name: str, repo_root: Path, *, legacy: bool = False) -> Compile
         report.error = f"repo path not found: {repo_root}"
         return CompileOutput(report=report, docs=[], canonical_repo=name)
 
-    # ADR-035: repo identity = registry 逻辑 name(kb-sources.toml), 与物理目录名/位置
+    # repo identity = registry 逻辑 name(kb-sources.toml), 与物理目录名/位置
     # 解耦。不取磁盘 basename — 仓迁移/改名(leaf≠name)不再改 identity。
     repo = name
 
@@ -89,7 +89,9 @@ def compile_repo(name: str, repo_root: Path, *, legacy: bool = False) -> Compile
                     from_kind=result.kind_downgraded_from,
                 )
             )
-        if not result.doc.kind_explicit:
+        # 一旦文档显式进入 lifecycle,kind 只是可选检索标签,不再是写入门禁。
+        # 仅对完全没有 status 的迁移文档保留旧的缺 kind 信号。
+        if not result.doc.kind_explicit and not result.doc.status:
             report.kind_missing.append(note.source_path)
         docs.append(result.doc)
         domains_with_notes.add(note.node.domain)
@@ -208,7 +210,7 @@ def prune_retired_repos(
     """清理 <compiled_dir> 下整个退役 repo 子目录(不在 active sources 清单内)。
 
     prune_stale_compiled 只清「同仓子目录内 scan 之外的单篇」, 覆盖不到「整个 repo
-    改名/退役后旧子目录整体成孤儿」(ADR-035: 物理 leaf→registry name 改名后, 旧 leaf
+    改名/退役后旧子目录整体成孤儿」(物理 leaf→registry name 改名后, 旧 leaf
     名 compiled 目录无人 scan, 永远不进单篇 prune)。本函数按 active 仓名集合判退役,
     整目录删。守卫同口径: 待删仓目录 >50% 拒绝(需 force);默认 dry-run(apply=False)。
 

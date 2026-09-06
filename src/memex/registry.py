@@ -15,26 +15,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def _workspace_root() -> Path:
+def _source_root() -> Path:
+    # KB_SOURCE_ROOT is memex's historical name; KB_WORKSPACE_ROOT is the
+    # shared rhizome registry contract. Keep both so one registry can feed the
+    # authoring and indexing binaries without duplicate path configuration.
     return Path(
         os.path.expandvars(
-            os.environ.get("KB_WORKSPACE_ROOT", str(Path.home() / "workspace"))
+            os.environ.get(
+                "KB_SOURCE_ROOT",
+                os.environ.get("KB_WORKSPACE_ROOT", str(Path.home() / "projects")),
+            )
         )
     ).expanduser()
 
 
-_WORKSPACE = _workspace_root()
+_SOURCE_ROOT = _source_root()
 _ARTIFACTS_SUBPATH = Path(".legacy-index/index/artifacts")
 # 源仓清单真相文件(authoring 工具侧产出);$KB_SOURCES 覆盖默认路径。
-# 默认指向 knowledge/personal/rhizome 下的 kb-sources.toml;不存在则 fallback 内置默认(见下)。
-_KB_SOURCES_RELATIVE = Path("knowledge/personal/rhizome/kb-sources.toml")
-_KB_SOURCES_LEGACY_RELATIVE = Path("rhizome/kb-sources.toml")
+# 默认指向源仓根下的 kb-sources.toml;不存在则 fallback 内置默认(见下)。
+_KB_SOURCES_RELATIVE = Path("kb-sources.toml")
 
 # fallback 清单:无 kb-sources.toml 时使用的中性默认。
 # 实际部署请通过 kb-sources.toml(或 $KB_SOURCES)配置真实源仓;
 # 此处仅给一个示例条目,缺省可留空 dict。
 DEFAULT_SOURCE_REPOS: dict[str, Path] = {
-    "docs": _WORKSPACE / "docs",
+    "docs": _SOURCE_ROOT / "docs",
 }
 # legacy 标记的源仓名:命中要在消费时刻标「未核验」(迁移期用)。默认无。
 DEFAULT_LEGACY_REPOS: frozenset[str] = frozenset()
@@ -57,14 +62,49 @@ def _illegal_name(name: str) -> bool:
 
 
 def _kb_sources_path() -> Path:
-    workspace = _workspace_root()
+    source_root = _source_root()
     raw = os.environ.get("KB_SOURCES")
     if raw:
-        path = Path(os.path.expandvars(raw)).expanduser()
-        if path == workspace / _KB_SOURCES_LEGACY_RELATIVE:
-            return workspace / _KB_SOURCES_RELATIVE
-        return path
-    return workspace / _KB_SOURCES_RELATIVE
+        return Path(os.path.expandvars(raw)).expanduser()
+    return source_root / _KB_SOURCES_RELATIVE
+
+
+def _load_local_overrides(registry: Path) -> dict[str, dict]:
+    """Load the sibling ``*.local.toml`` machine-path overlay.
+
+    ``~/.config/rhizome/sources.toml`` therefore pairs with
+    ``sources.local.toml``. Overrides patch existing logical sources only;
+    source identity and membership remain owned by the base registry.
+    """
+    local = registry.with_name(registry.stem + ".local.toml")
+    if not local.is_file():
+        return {}
+    data = tomllib.loads(local.read_text(encoding="utf-8"))
+    overrides: dict[str, dict] = {}
+    for entry in data.get("source", []):
+        name = entry.get("name")
+        if name and isinstance(name, str):
+            overrides[name] = {
+                key: value for key, value in entry.items() if key != "name"
+            }
+    return overrides
+
+
+def _apply_local_overrides(
+    registry: Path, repos: dict[str, Path], legacy: set[str]
+) -> None:
+    """Apply machine-local paths and legacy flags to known logical sources."""
+    for name, override in _load_local_overrides(registry).items():
+        if name not in repos:
+            continue
+        if path := override.get("path"):
+            repos[name] = Path(path).expanduser()
+        if "legacy" not in override:
+            continue
+        if override["legacy"] is True:
+            legacy.add(name)
+        else:
+            legacy.discard(name)
 
 
 def load_source_registry() -> SourceRegistry:
@@ -72,7 +112,7 @@ def load_source_registry() -> SourceRegistry:
 
     toml 本身就是源仓清单的存储真相, 用 stdlib tomllib 读同一份。
 
-    口径: $KB_SOURCES 覆盖 toml 路径, $KB_WORKSPACE_ROOT 覆盖 workspace 根。
+    口径: $KB_SOURCES 覆盖 toml 路径, $KB_SOURCE_ROOT 覆盖源仓根。
     读路径 fail-safe(不 raise):缺失/损坏文件 → 降级内置 DEFAULT_SOURCE_REPOS;
     重复 name → 取首个跳过后者;非法 name(路径穿越判据见 _illegal_name)→
     跳过该条;均记 warning。
@@ -94,7 +134,11 @@ def load_source_registry() -> SourceRegistry:
         data = tomllib.loads(reg.read_text(encoding="utf-8"))
         base = Path(
             os.environ.get(
-                "KB_WORKSPACE_ROOT", data.get("workspace_root", "~/workspace")
+                "KB_SOURCE_ROOT",
+                os.environ.get(
+                    "KB_WORKSPACE_ROOT",
+                    data.get("source_root", data.get("workspace_root", "~/projects")),
+                ),
             )
         ).expanduser()
         out: dict[str, Path] = {}
@@ -119,6 +163,7 @@ def load_source_registry() -> SourceRegistry:
             out[name] = Path(path).expanduser() if path else base / name
             if entry.get("legacy") is True:
                 legacy.add(name)
+        _apply_local_overrides(reg, out, legacy)
         if not out:
             return _degraded(f"{reg}: no usable [[source]] entries")
         return SourceRegistry(

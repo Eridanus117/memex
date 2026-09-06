@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,29 +73,62 @@ def _internal_ssl_context(_url: str) -> ssl.SSLContext | None:
 def _post_json(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
     data = json.dumps(body).encode("utf-8")
     headers: dict[str, str] = {"Content-Type": "application/json"}
-    token = os.environ.get("ORRERY_GATEWAY_TOKEN")
+    token = os.environ.get("KB_SEARCH_BEARER_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     ctx = _internal_ssl_context(url)
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()[:500]
+        reason = getattr(exc, "reason", None) or exc.msg
+        msg = f"HTTP {exc.code} {reason}"
+        if detail:
+            msg = f"{msg}: {detail}"
+        raise OSError(msg) from exc
 
 
 # URLError/TimeoutError ⊂ OSError;JSONDecodeError ⊂ ValueError;KeyError = 畸形响应。
 _UNAVAILABLE_ERRORS = (OSError, ValueError, KeyError)
 
 
-def embed_texts(texts: list[str], s: Settings = settings) -> list[list[float]]:
+def _embedding_unavailable_message(
+    exc: BaseException,
+    s: Settings,
+    batch_size: int,
+    *,
+    endpoint: str,
+    lane: str,
+) -> str:
+    timeout = f"{s.embed_timeout_secs:g}s"
+    return (
+        "embedding unreachable: request failed "
+        f"(lane={lane}, endpoint={endpoint}, model={s.embedding_model}, "
+        f"batch={batch_size}, timeout={timeout}; "
+        "set KB_SEARCH_EMBED_TIMEOUT_SECS to lower while diagnosing): "
+        f"{exc}"
+    )
+
+
+def embed_texts(
+    texts: list[str],
+    s: Settings = settings,
+    *,
+    endpoint: str | None = None,
+    lane: str = "query",
+) -> list[list[float]]:
     """批量 embed(OpenAI 兼容 /v1/embeddings)。按 index 还原顺序,校验维度。
 
     基础设施异常(网络/畸形响应/维度不符)统一转 SemanticUnavailable。
     """
     if not texts:
         return []
+    url = endpoint or s.embedding_url
     try:
         resp = _post_json(
-            s.embedding_url,
+            url,
             {"model": s.embedding_model, "input": texts},
             s.embed_timeout_secs,
         )
@@ -106,7 +140,9 @@ def embed_texts(texts: list[str], s: Settings = settings) -> list[list[float]]:
             if len(v) != s.embedding_dimensions:
                 raise ValueError(f"embedding 维度 {len(v)} != {s.embedding_dimensions}")
     except _UNAVAILABLE_ERRORS as exc:
-        raise SemanticUnavailable(f"embedding unreachable: {exc}") from exc
+        raise SemanticUnavailable(
+            _embedding_unavailable_message(exc, s, len(texts), endpoint=url, lane=lane)
+        ) from exc
     return vectors
 
 
