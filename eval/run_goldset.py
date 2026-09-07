@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from memex.engine import Engine
@@ -141,39 +142,9 @@ def _drift_check(engine: Engine, gold: list[dict]) -> None:
         sys.exit(1)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--lane", choices=["lexical", "semantic", "hybrid"], default="lexical"
-    )
-    ap.add_argument("--gold", type=Path, default=_DEFAULT_GOLD)
-    ap.add_argument("--out", type=Path, default=None)
-    ap.add_argument(
-        "--embed-batch", type=int, default=64, help="semantic lane 批量 embed 大小"
-    )
-    ap.add_argument(
-        "--protect",
-        action="store_true",
-        help="hybrid: 开选项2 lexical-dependent 保护(强锚定抬 lexical 权重)",
-    )
-    ap.add_argument(
-        "--kind-prior",
-        action="store_true",
-        help="hybrid: 开 kind 排序 prior(ADR-016 档位伪 lane 票,KB-334 候选)",
-    )
-    args = ap.parse_args()
-    suffix = ""
-    if args.lane == "hybrid":
-        suffix += "_protected" if args.protect else ""
-        suffix += "_kindprior" if args.kind_prior else ""
-    out_path = args.out or _DEFAULT_RESULTS / f"{args.lane}{suffix}_goldset.json"
-
-    gold = [
-        json.loads(ln)
-        for ln in args.gold.read_text(encoding="utf-8").splitlines()
-        if ln.strip()
-    ]
-
+def _search_keys_for_lane(
+    args: argparse.Namespace, gold: list[dict]
+) -> Callable[[str, str], list[str]]:
     # lane → search_keys(query_text, repo) -> top-10 identity 列表。
     if args.lane == "lexical":
         engine = Engine()
@@ -206,6 +177,12 @@ def main() -> int:
             # 不再外部预 embed 传 query_vector(旧 per-root 设计)。
             return [h.object_key for h in hy.search(qtext, k=10, repo=repo)]
 
+    return search_keys
+
+
+def _evaluate(
+    gold: list[dict], search_keys: Callable[[str, str], list[str]]
+) -> list[dict]:
     rows = []
     for q in gold:
         repo = q["gold_key"].split(":", 1)[
@@ -222,14 +199,20 @@ def main() -> int:
             }
         )
 
-    def slices(rs: list[dict]) -> dict:
-        out = {"_overall": score(rs)}
-        for dim in ("qtype", "_slice", "_repo_true", "_repo_group"):
-            for v in sorted({r[dim] for r in rs}):
-                out[f"{dim}={v}"] = score([r for r in rs if r[dim] == v])
-        return out
+    return rows
 
-    s = slices(rows)
+
+def _slices(rs: list[dict]) -> dict:
+    out = {"_overall": score(rs)}
+    for dim in ("qtype", "_slice", "_repo_true", "_repo_group"):
+        for v in sorted({r[dim] for r in rs}):
+            out[f"{dim}={v}"] = score([r for r in rs if r[dim] == v])
+    return out
+
+
+def _write_report(
+    args: argparse.Namespace, gold: list[dict], s: dict, out_path: Path
+) -> None:
     report = {
         "lane": args.lane,
         "gold": args.gold.name,
@@ -249,119 +232,131 @@ def main() -> int:
                 f"  {k:34} n={v.get('n'):3} gold@10={v.get('gold_key@10')} gold@5={v.get('gold_key@5')} mrr={v.get('mrr_gold')} no_hit={v.get('no_hit')}"
             )
 
-    if args.lane == "semantic":
-        # 无冻结 semantic-only 基准 → 报数不判闸(诚实)。真正的回归闸是 hybrid。
-        print("\n=== semantic lane(无冻结 semantic-only 基准 → 报数不判闸)===")
-        return 0
 
-    if args.lane == "hybrid":
-        rebaseline = args.protect and HYBRID_BASELINE.get("_overall", 0.0) == 0.0
-        if rebaseline:
-            print(
-                "\n*** REBASELINE MODE: HYBRID_BASELINE 为占位,绝对地板不判;回填常量后复跑 ***"
-            )
-        d = out_path.parent
-        lex_s = json.loads((d / "lexical_goldset.json").read_text())["slices"]
-        sem_s = json.loads((d / "semantic_goldset.json").read_text())["slices"]
+def _check_hybrid_relative(s: dict, d: Path, failed: list[str]) -> None:
+    lex_s = json.loads((d / "lexical_goldset.json").read_text())["slices"]
+    sem_s = json.loads((d / "semantic_goldset.json").read_text())["slices"]
+    print(
+        "\n=== HYBRID GATE (hybrid ≥ 单 lane 较好者 per slice, margin",
+        _HYBRID_MARGIN,
+        ") ===",
+    )
+    for key in _HYBRID_TRACKED:
+        h = s.get(key, {}).get("gold_key@10", 0.0)
+        lx = lex_s.get(key, {}).get("gold_key@10", 0.0)
+        sm = sem_s.get(key, {}).get("gold_key@10", 0.0)
+        best = max(lx, sm)
+        ok = h >= best - _HYBRID_MARGIN
         print(
-            "\n=== HYBRID GATE (hybrid ≥ 单 lane 较好者 per slice, margin",
-            _HYBRID_MARGIN,
-            ") ===",
+            f"  {'PASS' if ok else 'FAIL'}  {key:34} hybrid={h}  lex={lx} sem={sm} max={best}  Δ={round(h - best, 4):+}"
         )
-        failed = []
-        for key in _HYBRID_TRACKED:
-            h = s.get(key, {}).get("gold_key@10", 0.0)
-            lx = lex_s.get(key, {}).get("gold_key@10", 0.0)
-            sm = sem_s.get(key, {}).get("gold_key@10", 0.0)
-            best = max(lx, sm)
-            ok = h >= best - _HYBRID_MARGIN
-            print(
-                f"  {'PASS' if ok else 'FAIL'}  {key:34} hybrid={h}  lex={lx} sem={sm} max={best}  Δ={round(h - best, 4):+}"
-            )
-            if not ok:
-                failed.append(key)
-        if args.protect and not rebaseline:
-            print(
-                "\n=== HYBRID ABSOLUTE FLOOR (vs HYBRID_BASELINE, margin",
-                _HYBRID_MARGIN,
-                ") ===",
-            )
-            for key, base in HYBRID_BASELINE.items():
-                got = s.get(key, {}).get("gold_key@10", 0.0)
-                ok = got >= base - _HYBRID_MARGIN
-                print(
-                    f"  {'PASS' if ok else 'FAIL'}  {key:34} got={got}  base={base}  Δ={round(got - base, 4):+}"
-                )
-                if not ok:
-                    failed.append(f"floor:{key}")
-        # kind-prior 促升闸(KB-334,ADR-023 条5):candidate(protect+kind_prior)vs
-        # current default(protect)。gold@10 近天花板 → 闸含排序敏感指标 @5/mrr。
-        default_file = d / "hybrid_protected_goldset.json"
-        if args.kind_prior and default_file.exists():
-            base_s = json.loads(default_file.read_text())["slices"]
-            print("\n=== kind-prior vs current default(hybrid --protect)per slice ===")
-            regressed = []
-            improved = False
-            for key in _HYBRID_TRACKED:
-                for metric in ("gold_key@10", "gold_key@5", "mrr_gold"):
-                    c = s.get(key, {}).get(metric, 0.0)
-                    b = base_s.get(key, {}).get(metric, 0.0)
-                    delta = round(c - b, 4)
-                    flag = "↑" if delta > 0 else ("↓" if delta < 0 else "=")
-                    print(
-                        f"  {flag}  {key:34} {metric:12} candidate={c}  default={b}  Δ={delta:+}"
-                    )
-                    if delta < -_HYBRID_MARGIN:
-                        regressed.append(f"{key}:{metric}")
-                    if delta > 0:
-                        improved = True
-            verdict = "FLIP ON" if not regressed and improved else "KEEP OFF"
-            print(
-                f"\n  KB-334 promotion: {verdict}"
-                + (f"(回归: {regressed})" if regressed else "(无回归)")
-            )
-        elif args.kind_prior:
-            print(
-                f"\n*** kind-prior 闸跳过: 缺 current default 成绩单 {default_file} ***"
-            )
-        # 选项 2 开关:对比 baseline hybrid(flag off),看是否净改善 + 无回归(§I9 promotion gate)。
-        base_file = d / "hybrid_goldset.json"
-        if args.protect and not args.kind_prior and base_file.exists():
-            base_s = json.loads(base_file.read_text())["slices"]
-            print("\n=== 选项2 vs baseline hybrid(flag off)per slice ===")
-            regressed = []
-            for key in _HYBRID_TRACKED:
-                h = s.get(key, {}).get("gold_key@10", 0.0)
-                b = base_s.get(key, {}).get("gold_key@10", 0.0)
-                delta = round(h - b, 4)
-                flag = "↑" if delta > 0 else ("↓" if delta < 0 else "=")
-                print(f"  {flag}  {key:34} protected={h}  baseline={b}  Δ={delta:+}")
-                if delta < -_HYBRID_MARGIN:
-                    regressed.append(key)
-            verdict = (
-                "FLIP ON"
-                if not regressed
-                and any(
-                    s.get(k, {}).get("gold_key@10", 0.0)
-                    > base_s.get(k, {}).get("gold_key@10", 0.0)
-                    for k in _HYBRID_TRACKED
-                )
-                else "KEEP OFF"
-            )
-            print(
-                f"\n  §I9 promotion: {verdict}"
-                + (f"(回归: {regressed})" if regressed else "(无回归)")
-            )
+        if not ok:
+            failed.append(key)
 
-        if failed:
-            print(f"\n✗ HYBRID GATE FAILED: {failed}")
-            return 1
+
+def _check_hybrid_floor(s: dict, failed: list[str]) -> None:
+    print(
+        "\n=== HYBRID ABSOLUTE FLOOR (vs HYBRID_BASELINE, margin",
+        _HYBRID_MARGIN,
+        ") ===",
+    )
+    for key, base in HYBRID_BASELINE.items():
+        got = s.get(key, {}).get("gold_key@10", 0.0)
+        ok = got >= base - _HYBRID_MARGIN
         print(
-            "\n✓ HYBRID GATE PASS — hybrid ≥ 单 lane 较好者(per slice)"
-            + (" 且 ≥ 冻结绝对地板" if (args.protect and not rebaseline) else "")
+            f"  {'PASS' if ok else 'FAIL'}  {key:34} got={got}  base={base}  Δ={round(got - base, 4):+}"
         )
-        return 0
+        if not ok:
+            failed.append(f"floor:{key}")
 
+
+def _report_kind_prior(s: dict, default_file: Path) -> None:
+    base_s = json.loads(default_file.read_text())["slices"]
+    print("\n=== kind-prior vs current default(hybrid --protect)per slice ===")
+    regressed = []
+    improved = False
+    for key in _HYBRID_TRACKED:
+        for metric in ("gold_key@10", "gold_key@5", "mrr_gold"):
+            c = s.get(key, {}).get(metric, 0.0)
+            b = base_s.get(key, {}).get(metric, 0.0)
+            delta = round(c - b, 4)
+            flag = "↑" if delta > 0 else ("↓" if delta < 0 else "=")
+            print(
+                f"  {flag}  {key:34} {metric:12} candidate={c}  default={b}  Δ={delta:+}"
+            )
+            if delta < -_HYBRID_MARGIN:
+                regressed.append(f"{key}:{metric}")
+            if delta > 0:
+                improved = True
+    verdict = "FLIP ON" if not regressed and improved else "KEEP OFF"
+    print(
+        f"\n  KB-334 promotion: {verdict}"
+        + (f"(回归: {regressed})" if regressed else "(无回归)")
+    )
+
+
+def _report_protection(s: dict, base_file: Path) -> None:
+    base_s = json.loads(base_file.read_text())["slices"]
+    print("\n=== 选项2 vs baseline hybrid(flag off)per slice ===")
+    regressed = []
+    for key in _HYBRID_TRACKED:
+        h = s.get(key, {}).get("gold_key@10", 0.0)
+        b = base_s.get(key, {}).get("gold_key@10", 0.0)
+        delta = round(h - b, 4)
+        flag = "↑" if delta > 0 else ("↓" if delta < 0 else "=")
+        print(f"  {flag}  {key:34} protected={h}  baseline={b}  Δ={delta:+}")
+        if delta < -_HYBRID_MARGIN:
+            regressed.append(key)
+    verdict = (
+        "FLIP ON"
+        if not regressed
+        and any(
+            s.get(k, {}).get("gold_key@10", 0.0)
+            > base_s.get(k, {}).get("gold_key@10", 0.0)
+            for k in _HYBRID_TRACKED
+        )
+        else "KEEP OFF"
+    )
+    print(
+        f"\n  §I9 promotion: {verdict}"
+        + (f"(回归: {regressed})" if regressed else "(无回归)")
+    )
+
+
+def _hybrid_gate(args: argparse.Namespace, s: dict, out_path: Path) -> int:
+    rebaseline = args.protect and HYBRID_BASELINE.get("_overall", 0.0) == 0.0
+    if rebaseline:
+        print(
+            "\n*** REBASELINE MODE: HYBRID_BASELINE 为占位,绝对地板不判;回填常量后复跑 ***"
+        )
+    d = out_path.parent
+    failed = []
+    _check_hybrid_relative(s, d, failed)
+    if args.protect and not rebaseline:
+        _check_hybrid_floor(s, failed)
+    # kind-prior 促升闸(KB-334,ADR-023 条5):candidate(protect+kind_prior)vs
+    # current default(protect)。gold@10 近天花板 → 闸含排序敏感指标 @5/mrr。
+    default_file = d / "hybrid_protected_goldset.json"
+    if args.kind_prior and default_file.exists():
+        _report_kind_prior(s, default_file)
+    elif args.kind_prior:
+        print(f"\n*** kind-prior 闸跳过: 缺 current default 成绩单 {default_file} ***")
+    # 选项 2 开关:对比 baseline hybrid(flag off),看是否净改善 + 无回归(§I9 promotion gate)。
+    base_file = d / "hybrid_goldset.json"
+    if args.protect and not args.kind_prior and base_file.exists():
+        _report_protection(s, base_file)
+
+    if failed:
+        print(f"\n✗ HYBRID GATE FAILED: {failed}")
+        return 1
+    print(
+        "\n✓ HYBRID GATE PASS — hybrid ≥ 单 lane 较好者(per slice)"
+        + (" 且 ≥ 冻结绝对地板" if (args.protect and not rebaseline) else "")
+    )
+    return 0
+
+
+def _lexical_gate(s: dict) -> int:
     # lexical gate
     if BASELINE.get("_overall", 0.0) == 0.0:
         print("\n*** REBASELINE MODE: BASELINE 为占位,只报数;回填常量后复跑判闸 ***")
@@ -381,6 +376,52 @@ def main() -> int:
         return 1
     print("\n✓ GATE PASS — lexical lane ≥ goldset-kb-v5 冻结基线")
     return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--lane", choices=["lexical", "semantic", "hybrid"], default="lexical"
+    )
+    ap.add_argument("--gold", type=Path, default=_DEFAULT_GOLD)
+    ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument(
+        "--embed-batch", type=int, default=64, help="semantic lane 批量 embed 大小"
+    )
+    ap.add_argument(
+        "--protect",
+        action="store_true",
+        help="hybrid: 开选项2 lexical-dependent 保护(强锚定抬 lexical 权重)",
+    )
+    ap.add_argument(
+        "--kind-prior",
+        action="store_true",
+        help="hybrid: 开 kind 排序 prior(ADR-016 档位伪 lane 票,KB-334 候选)",
+    )
+    args = ap.parse_args()
+    suffix = ""
+    if args.lane == "hybrid":
+        suffix += "_protected" if args.protect else ""
+        suffix += "_kindprior" if args.kind_prior else ""
+    out_path = args.out or _DEFAULT_RESULTS / f"{args.lane}{suffix}_goldset.json"
+
+    gold = [
+        json.loads(ln)
+        for ln in args.gold.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    search_keys = _search_keys_for_lane(args, gold)
+    rows = _evaluate(gold, search_keys)
+    s = _slices(rows)
+    _write_report(args, gold, s, out_path)
+
+    if args.lane == "semantic":
+        # 无冻结 semantic-only 基准 → 报数不判闸(诚实)。真正的回归闸是 hybrid。
+        print("\n=== semantic lane(无冻结 semantic-only 基准 → 报数不判闸)===")
+        return 0
+    if args.lane == "hybrid":
+        return _hybrid_gate(args, s, out_path)
+    return _lexical_gate(s)
 
 
 if __name__ == "__main__":
