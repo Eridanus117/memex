@@ -17,8 +17,4 @@ htmlcov/
 .repo-release-gate.local.toml
 .docket-release-gate.local.toml
 
-# Local assistant guidance kept outside release artifacts
-AGENTS.md
-CLAUDE.md
-
 eval/results/
